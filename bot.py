@@ -4,7 +4,7 @@ import threading
 import time
 import requests
 from flask import Flask
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, 
     CallbackQueryHandler, ContextTypes, filters
@@ -12,33 +12,30 @@ from telegram.ext import (
 
 # ---------------- 1. ENVIRONMENT VARIABLES ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # የቴሌግራም ID (በቁጥር)
-RENDER_URL = os.getenv("RENDER_URL")        # Render ላይ የሚሰጥህ የዌብሳይት ሊንክ (ተማራጭ)
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # የአድሚን Telegram ID
+RENDER_URL = os.getenv("RENDER_URL")
 
-# ---------------- 2. KEEP-ALIVE SERVER (SLEEP እንዳያደርግ) ----------------
+# ---------------- 2. KEEP-ALIVE SERVER (Prevent Sleep) ----------------
 web_app = Flask('')
 
 @web_app.route('/')
 def home():
-    return "Gondar Bot is Active and Running!"
+    return "Gondar Pro Bot is Active!"
 
 def run_flask():
     web_app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
-    # Flask Web Server በ background ይጀምራል
     server_thread = threading.Thread(target=run_flask)
     server_thread.daemon = True
     server_thread.start()
     
-    # ራሱን በራሱ በየ 10 ደቂቃው Ping በማድረግ Sleep እንዳያደርግ ይከላከላል
     def ping_self():
         while True:
-            time.sleep(600) # 10 ደቂቃ (600 ሰከንድ)
+            time.sleep(600)
             if RENDER_URL:
                 try:
                     requests.get(RENDER_URL)
-                    print("Self-ping sent successfully!")
                 except Exception as e:
                     print(f"Ping Error: {e}")
 
@@ -50,18 +47,10 @@ def keep_alive():
 def init_db():
     conn = sqlite3.connect("gondar_market.db")
     cursor = conn.cursor()
-    # 1. የዕቃዎች ሰንጠረዥ
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT, price REAL, category TEXT, description TEXT
-        )
-    ''')
-    # 2. የደላላ እና የትራንስፖርት ጥያቄዎች
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, type TEXT, details TEXT
         )
     ''')
     conn.commit()
@@ -69,125 +58,203 @@ def init_db():
 
 init_db()
 
-# ---------------- 4. BOT CORE FUNCTIONS ----------------
+# ---------------- 4. HELPER FUNCTIONS ----------------
+# ቻቱ ንጹህ እንዲሆን የቀደመውን መልዕክት የማጥፋት ረዳት
+async def delete_previous_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = update.callback_query
+        if query and query.message:
+            await query.message.delete()
+    except Exception as e:
+        print(f"Delete Error: {e}")
+
+# ዋናው የሜኑ ቁልፍ
+def main_menu_keyboard(user_id):
+    keyboard = [
+        ["🛍️ እቃዎች መግዛት", "🏪 እቃ ለመሸጥ / መመዝገብ"],
+        ["🚚 የጭነት / Delivery አገልግሎት"]
+    ]
+    if ADMIN_CHAT_ID and str(user_id) == str(ADMIN_CHAT_ID):
+        keyboard.append(["⚙️ Admin Panel"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+# ---------------- 5. BOT CORE HANDLERS ----------------
 
 # A. Start Command (/start)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    
-    # ዋና ዋና የሜኑ ቁልፎች
-    keyboard = [
-        ["🛍️ እቃዎች መግዛት", "➕ እቃ ለመሸጥ (Broker)"],
-        ["🚚 የጭነት/ትራንስፖርት አገልግሎት", "💳 የክፍያ አማራጮች"]
-    ]
-    
-    # አድሚን ከሆነ ተጨማሪ Admin Panel ቁልፍ ይታየዋል
-    if ADMIN_CHAT_ID and user_id == str(ADMIN_CHAT_ID):
-        keyboard.append(["⚙️ Admin Panel"])
-
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    user_id = update.effective_user.id
     await update.message.reply_text(
         f"ሰላም {update.effective_user.first_name}!\n"
-        "እንኳን ወደ **ጎንደር ኦንላይን ገበያ እና የደላላ ቦት** በሰላም መጡ።\n"
+        "እንኳን ወደ **ጎንደር ፕሮፌሽናል ገበያ እና ዴሊቨሪ** በሰላም መጡ።\n\n"
         "እባክዎን ከታች ካሉት አማራጮች አንዱን ይምረጡ፡",
-        reply_markup=reply_markup,
+        reply_markup=main_menu_keyboard(user_id),
         parse_mode="Markdown"
     )
 
-# B. Main Message Handler
+# B. Inline Navigation Handlers
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+
+    # 1. ወደ ዋና ገጽ (Home / Back)
+    if query.data == "nav_home":
+        await delete_previous_msg(update, context)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="🏠 ወደ ዋና ገጽ ተመልሰዋል፡",
+            reply_markup=main_menu_keyboard(user_id)
+        )
+
+    # 2. የምድብ መምረጫ
+    elif query.data.startswith("cat_"):
+        await delete_previous_msg(update, context)
+        category = query.data.split("_")[1].upper()
+        
+        # የዕቃዎች ዝርዝር ናሙና (ከዳታቤዝ የሚመጣ)
+        inline_kb = [
+            [InlineKeyboardButton("📱 ስማርት ፎን - 15,000 Birr", callback_data="buy_prod_1")],
+            [InlineKeyboardButton("🛋️ ሶፋ ሴት - 45,000 Birr", callback_data="buy_prod_2")],
+            [InlineKeyboardButton("⬅️ ተመለስ (Home)", callback_data="nav_home")]
+        ]
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"📂 የምድብ ስም: **{category}**\n\nለመግዛት የሚፈልጉትን እቃ ይምረጡ፡",
+            reply_markup=InlineKeyboardMarkup(inline_kb),
+            parse_mode="Markdown"
+        )
+
+    # 3. እቃ መምረጥ እና ማዘዝ (Order Process)
+    elif query.data.startswith("buy_prod_"):
+        await delete_previous_msg(update, context)
+        prod_id = query.data.split("_")[2]
+        
+        # የትራንስፖርት/Location መጠየቂያ ቁልፍ
+        loc_keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("📍 ያለሁበትን ቦታ ይላኩ (Share Location)", request_location=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="🛒 **የማዘዣ ሂደት (Checkout)**\n\n"
+                 "እቃውን ያዘዙበት አድራሻ በትክክል እንዲደርስዎ እባክዎን ከታች ያለውን **'📍 ያለሁበትን ቦታ ይላኩ'** የሚለውን ቁልፍ ይጫኑ፡",
+            reply_markup=loc_keyboard,
+            parse_mode="Markdown"
+        )
+
+# C. Location Message Handler (አድራሻ እና ክፍያ ማስፈጸሚያ)
+async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    location = update.message.location
+
+    # የአድራሻ መረጃ ከተቀበለ በኋላ የክፍያ አማራጭ ያሳያል
+    payment_kb = [
+        [InlineKeyboardButton("💳 Telebirr", callback_data="pay_telebirr")],
+        [InlineKeyboardButton("🏦 CBE Birr", callback_data="pay_cbe")],
+        [InlineKeyboardButton("💵 Cash on Delivery (ሲረከቡ)", callback_data="pay_cash")],
+        [InlineKeyboardButton("🏠 ዋና ገጽ", callback_data="nav_home")]
+    ]
+
+    await update.message.reply_text(
+        "✅ **አድራሻዎ በስኬት ተቀብለናል!**\n\n"
+        "አሁን እባክዎን የክፍያ አማራጭ ይምረጡ፡",
+        reply_markup=InlineKeyboardMarkup(payment_kb),
+        parse_mode="Markdown"
+    )
+
+    # ለአድሚኑ የትዕዛዙን አድራሻ ማስተላለፍ
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"📦 **አዲስ ትዕዛዝ ተልኳል!**\nሰውዬው: {user.full_name} (@{user.username})"
+            )
+            await context.bot.send_location(
+                chat_id=ADMIN_CHAT_ID,
+                latitude=location.latitude,
+                longitude=location.longitude
+            )
+        except Exception as e:
+            print(f"Admin Notify Error: {e}")
+
+# D. Main Message Text Handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    user = update.effective_user
-    user_id = str(user.id)
+    user_id = update.effective_user.id
 
-    # 1. እቃዎች መግዛት (E-commerce Categories)
+    # 1. እቃዎች መግዛት (Clean UI with Categories)
     if text == "🛍️ እቃዎች መግዛት":
         inline_kb = [
             [InlineKeyboardButton("📱 ኤሌክትሮኒክስ", callback_data="cat_electronics")],
             [InlineKeyboardButton("🛋️ የቤት እቃዎች", callback_data="cat_furniture")],
-            [InlineKeyboardButton("💄 ኮስሞቲክስ", callback_data="cat_cosmetics")]
+            [InlineKeyboardButton("💄 ኮስሞቲክስ", callback_data="cat_cosmetics")],
+            [InlineKeyboardButton("🏠 ዋና ገጽ", callback_data="nav_home")]
         ]
         await update.message.reply_text(
-            "የሚፈልጉትን የዕቃ ምድብ ይምረጡ፡", 
+            "የሚፈልጉትን የዕቃ ምድብ ይምረጡ፡",
             reply_markup=InlineKeyboardMarkup(inline_kb)
         )
 
-    # 2. እቃ ለመሸጥ (Broker System)
-    elif text == "➕ እቃ ለመሸጥ (Broker)":
+    # 2. እቃ ለመሸጥ / መመዝገብ (የመሸጫ መንገድ)
+    elif text == "🏪 እቃ ለመሸጥ / መመዝገብ":
         await update.message.reply_text(
-            "📝 **የመሸጫ ቅፅ**\n\n"
+            "📝 **የዕቃ መሸጫ/መመዝገቢያ ቅፅ**\n\n"
             "የሚሸጡትን እቃ መረጃ በሚከተለው አፃፃፍ ይላኩልን፡\n"
-            "1. የዕቃው ስም\n2. የሚፈልጉት ዋጋ\n3. የስልክ ቁጥር\n4. የዕቃው ሁኔታ/መግለጫ"
+            "1. የዕቃው ስም\n"
+            "2. የሚፈልጉት ዋጋ\n"
+            "3. የስልክ ቁጥር\n"
+            "4. የዕቃው ፎቶ\n\n"
+            "መረጀውን ሲልኩልን አድሚኖቻችን መዝግበው ለገበያ ያቀርቡታል!",
+            reply_markup=main_menu_keyboard(user_id)
         )
 
-    # 3. የጭነት/ትራንስፖርት አገልግሎት
-    elif text == "🚚 የጭነት/ትራንስፖርት አገልግሎት":
+    # 3. የጭነት / Delivery አገልግሎት
+    elif text == "🚚 የጭነት / Delivery አገልግሎት":
+        loc_keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("📍 የጭነት መነሻ ቦታ ይላኩ", request_location=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
         await update.message.reply_text(
-            "🚚 **የጭነት አገልግሎት ጥያቄ**\n\n"
-            "የሚዛወረውን እቃ፣ የመነሻ ቦታ እና የመድረሻ ቦታ ይፃፉልን።\n"
-            "ምሳሌ: *ከቀበሌ 18 ወደ አዳራሽ 2 ሶፋ እና አልጋ*"
+            "🚚 **የጭነት አገልግሎት**\n\nእቃው የሚነሳበትን ቦታ በትክክል ለመላክ ከታች ያለውን ቁልፍ ይጫኑ፡",
+            reply_markup=loc_keyboard
         )
 
-    # 4. የክፍያ አማራጮች
-    elif text == "💳 የክፍያ አማራጮች":
-        payment_msg = (
-            "💳 **የክፍያ አማራጮች (Payment Methods)**\n\n"
-            "1. **Telebirr:** 09XXXXXXXX\n"
-            "2. **CBE Birr:** 1000XXXXXXXX\n"
-            "3. **Cash on Delivery:** እቃው አድራሻዎ ደርሶ ሲረከቡ የሚከፈል"
-        )
-        await update.message.reply_text(payment_msg, parse_mode="Markdown")
-
-    # 5. Admin Panel (ለአድሚን ብቻ)
-    elif text == "⚙️ Admin Panel" and ADMIN_CHAT_ID and user_id == str(ADMIN_CHAT_ID):
+    # 4. Admin Panel
+    elif text == "⚙️ Admin Panel" and ADMIN_CHAT_ID and str(user_id) == str(ADMIN_CHAT_ID):
         admin_kb = [
-            [InlineKeyboardButton("➕ እቃ መመዝገብ", callback_data="admin_add")],
-            [InlineKeyboardButton("📋 የጥያቄዎች ዝርዝር", callback_data="admin_requests")]
+            [InlineKeyboardButton("➕ አዲስ እቃ መመዝገብ", callback_data="admin_add_prod")],
+            [InlineKeyboardButton("📋 የትዕዛዞች ዝርዝር", callback_data="admin_view_orders")],
+            [InlineKeyboardButton("🏠 ዋና ገጽ", callback_data="nav_home")]
         ]
         await update.message.reply_text(
-            "⚙️ **Admin Control Panel**", 
+            "⚙️ **Admin Control Panel**\nእንኳን ወደ አድሚን ክፍል በሰላም መጡ።",
             reply_markup=InlineKeyboardMarkup(admin_kb)
         )
 
-    # 6. ሌሎች መልዕክቶች እና ጥያቄዎች (ወደ አድሚን የማስተላለፊያ)
     else:
-        await update.message.reply_text("ጥያቄዎ ደርሶናል! በፍጥነት ምላሽ እንሰጣለን።")
-        
-        # መረጃውን ወደ አድሚን ቻት ማስተላለፍ
-        if ADMIN_CHAT_ID:
-            try:
-                forward_msg = f"📩 **አዲስ መልዕክት/ጥያቄ:**\n\nከ: {user.full_name} (@{user.username})\nመልዕክት: {text}"
-                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=forward_msg, parse_mode="Markdown")
-            except Exception as e:
-                print(f"Forward error: {e}")
+        await update.message.reply_text(
+            "ጥያቄዎ ደርሶናል! በፍጥነት ምላሽ እንሰጣለን።",
+            reply_markup=main_menu_keyboard(user_id)
+        )
 
-# C. Inline Buttons Callback Handler
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data.startswith("cat_"):
-        category = query.data.split("_")[1].upper()
-        await query.message.reply_text(f"የመረጡት ምድብ: **{category}**\n\nበዚህ ምድብ ያሉ እቃዎች ዝርዝር በመጫን ላይ ነው...")
-    elif query.data == "admin_add":
-        await query.message.reply_text("አዲስ እቃ ለመጨመር የዕቃውን ስም፣ ዋጋ እና መግለጫ ያስገቡ።")
-
-# ---------------- 5. MAIN RUNNER ----------------
+# ---------------- 6. MAIN RUNNER ----------------
 if __name__ == '__main__':
     if not BOT_TOKEN:
-        print("Error: BOT_TOKEN አልተገኘም! Environment variable-ን ያረጋግጡ።")
+        print("Error: BOT_TOKEN አልተገኘም!")
         exit(1)
 
-    # Sleep እንዳያደርግ Keep-Alive አገልግቱን ማስነሳት
     keep_alive()
 
-    # ቦቱን መገንባት
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Handlers ማገናኘት
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.LOCATION, handle_location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
-    print("🚀 ጎንደር ገበያ ቦት በስኬት ስራ ጀምሯል...")
+    print("🚀 ጎንደር ፕሮፌሽናል ቦት በስኬት ስራ ጀምሯል...")
     app.run_polling()
