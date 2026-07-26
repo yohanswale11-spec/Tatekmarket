@@ -13,22 +13,22 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters, ConversationHandler
 )
 
-# ---------------- 1. ENVIRONMENT VARIABLES ----------------
+# ---------------- 1. ENVIRONMENT VARIABLES & STATES ----------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 RENDER_URL = os.getenv("RENDER_URL")
 
-# Conversation States for Selling Item (እቃ የመሸጥ ደረጃዎች)
+# Conversation States
 SELL_TITLE, SELL_PRICE, SELL_PHOTO, SELL_PHONE = range(4)
-# Conversation States for Admin Adding Product (አድሚን እቃ የመመዝገብ ደረጃዎች)
 ADMIN_CAT, ADMIN_TITLE, ADMIN_PRICE, ADMIN_PHOTO = range(4, 8)
+DELIVERY_TYPE, DELIVERY_DESC = range(8, 10)
 
-# ---------------- 2. KEEP-ALIVE SERVER ----------------
+# ---------------- 2. KEEP-ALIVE SERVER (Prevent Sleep) ----------------
 web_app = Flask('')
 
 @web_app.route('/')
 def home():
-    return "Gondar Pro Market Bot is Active!"
+    return "Gondar Pro Market & Delivery Bot is Active!"
 
 def run_flask():
     web_app.run(host='0.0.0.0', port=8080)
@@ -40,7 +40,7 @@ def keep_alive():
     
     def ping_self():
         while True:
-            time.sleep(600)
+            time.sleep(600)  # በየ 10 ደቂቃው ራሱን Ping ያደርጋል
             if RENDER_URL:
                 try:
                     requests.get(RENDER_URL)
@@ -137,11 +137,10 @@ async def sell_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "✅ **የመሸጫ ጥያቄዎ ተቀብለናል!**\n\n"
-        "አድሚኖቻችን መረጃውን መርምረው ካረጋገጡ በኋላ ለገበያ ያቀርቡታል መልስ በቅርቡ ይደርስዎታል።",
+        "አድሚኖቻችን መረጃውን መርምረው ካረጋገጡ በኋላ ለገበያ ያቀርቡታል። በአጭር ጊዜ ውስጥ እናነጋግርዎታለን።",
         reply_markup=main_menu_keyboard(user.id)
     )
 
-    # ለአድሚኑ መረጃውን በፎቶ መላክ
     if ADMIN_CHAT_ID:
         try:
             caption = f"📩 **አዲስ የዕቃ መሸጫ ጥያቄ:**\n\n👤 ከ: {user.full_name} (@{user.username})\n📦 እቃ: {title}\n💰 ዋጋ: {price} Birr\n📞 ስልክ: {phone}"
@@ -191,7 +190,6 @@ async def admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = context.user_data['admin_title']
     price = float(context.user_data['admin_price'])
 
-    # በዳታቤዝ መመዝገብ
     add_product_db(title, price, cat, photo_id)
 
     await update.message.reply_text(
@@ -201,13 +199,62 @@ async def admin_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# D. Dynamic E-Commerce Catalog (እቃዎች መግዛት)
+# D. የጭነት/Delivery አገልግሎት ደረጃዎች
+async def delivery_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🛵 ትንሽ ጭነት (ከ 18 ኪሎ በታች - በሞተር/ባጃጅ)", callback_data="deltype_light")],
+        [InlineKeyboardButton("🚛 ሙሉ ጭነት / ትልቅ እቃ (በትራከር/ከባድ መኪና)", callback_data="deltype_heavy")],
+        [InlineKeyboardButton("🏠 ዋና ገጽ", callback_data="nav_home")]
+    ]
+    await update.message.reply_text(
+        "🚚 **የጭነት እና ማድረስ (Delivery) አገልግሎት**\n\n"
+        "እባክዎን የጭነቱን አይነት ይምረጡ፡",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return DELIVERY_TYPE
+
+async def delivery_type_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    del_type = query.data.split("_")[1]
+    if del_type == "light":
+        context.user_data['del_type_name'] = "🛵 ትንሽ ጭነት (ከ 18 ኪሎ በታች)"
+    else:
+        context.user_data['del_type_name'] = "🚛 ሙሉ ጭነት (በትራከር/ከባድ መኪና)"
+
+    await query.message.edit_text(
+        f"የመረጡት አገልግሎት፡ **{context.user_data['del_type_name']}**\n\n"
+        "📝 **እባክዎን ሊጭኑት ያሰቡትን እቃ መግለጫ በአጭሩ ይፃፉልን፡**\n"
+        "*(ምሳሌ፡ 2 ሶፋዎች እና 1 አልጋ ወይም 5 ካርቶን እቃ)*",
+        parse_mode="Markdown"
+    )
+    return DELIVERY_DESC
+
+async def delivery_desc_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['del_desc'] = update.message.text
+    
+    loc_keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton("📍 የጭነት መነሻ ቦታ ይላኩ (Share Location)", request_location=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+    
+    await update.message.reply_text(
+        "⚠️ **ማሳሰቢያ:** አድራሻዎን በትክክል ለመላክ **የስልክዎን GPS (Location)** ማብራትዎን ያረጋግጡ!\n\n"
+        "እቃው **የሚነሳበትን ቦታ** ለመላክ ከታች ያለውን **'📍 የጭነት መነሻ ቦታ ይላኩ'** የሚለውን ቁልፍ ይጫኑ፡",
+        reply_markup=loc_keyboard,
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+# E. Dynamic E-Commerce Catalog & Callbacks
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
 
-    # የምድብ መምረጫ
     if query.data.startswith("cat_"):
         category = query.data.split("_")[1]
         products = get_products_by_cat(category)
@@ -223,12 +270,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inline_kb.append([InlineKeyboardButton("🏠 ዋና ገጽ", callback_data="nav_home")])
             await query.message.edit_text(f"📂 የምድብ እቃዎች ({category})፡", reply_markup=InlineKeyboardMarkup(inline_kb))
 
-    # እቃ መምረጥ እና ማዘዝ
     elif query.data.startswith("buy_prod_"):
         prod_id = query.data.split("_")[2]
         context.user_data['selected_prod_id'] = prod_id
         
-        # GPS ማሳሰቢያ ጽሁፍ እና Location መጠየቂያ
         loc_keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton("📍 ያለሁበትን ቦታ ይላኩ (Share Location)", request_location=True)]],
             resize_keyboard=True,
@@ -244,7 +289,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    # የክፍያ አማራጭ ሲመረጥ ትዕዛዝ ማጠናቀቂያ
     elif query.data.startswith("pay_"):
         pay_method = query.data.split("_")[1].upper()
         await query.message.edit_text(
@@ -254,7 +298,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         
-        # ለአድሚኑ ማስታወቂያ መላክ
         if ADMIN_CHAT_ID:
             try:
                 user = update.effective_user
@@ -269,31 +312,61 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.delete()
         await context.bot.send_message(chat_id=user_id, text="🏠 ወደ ዋና ገጽ ተመልሰዋል፡", reply_markup=main_menu_keyboard(user_id))
 
-# E. Location Handler
+# F. Location Handler (አድራሻዎችን ለአድሚን ማስተላለፊያ)
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     location = update.message.location
+    
+    # የጭነት ጥያቄ ከሆነ
+    if 'del_type_name' in context.user_data:
+        del_type = context.user_data.get('del_type_name')
+        del_desc = context.user_data.get('del_desc')
+        
+        await update.message.reply_text(
+            "✅ **የጭነት ጥያቄዎ በስኬት ተልኳል!**\n\n"
+            f"አገልግሎት: {del_type}\n"
+            f"የእቃ መግለጫ: {del_desc}\n\n"
+            "አሽከርካሪያችን አድራሻዎን አይቶ በአጭር ጊዜ ውስጥ በስልክ ደውሎ ያነጋግርዎታል። አመሰግናለሁ!",
+            reply_markup=main_menu_keyboard(user.id),
+            parse_mode="Markdown"
+        )
+        
+        if ADMIN_CHAT_ID:
+            try:
+                admin_msg = (
+                    f"🚨 **አዲስ የጭነት ጥያቄ (Delivery Request)!**\n\n"
+                    f"👤 ሰውየው: {user.full_name} (@{user.username})\n"
+                    f"📦 የጭነት አይነት: {del_type}\n"
+                    f"📝 የእቃ ዝርዝር: {del_desc}"
+                )
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=admin_msg, parse_mode="Markdown")
+                await context.bot.send_location(chat_id=ADMIN_CHAT_ID, latitude=location.latitude, longitude=location.longitude)
+            except Exception as e:
+                print(f"Delivery Admin Notify Error: {e}")
+                
+        context.user_data.pop('del_type_name', None)
+        context.user_data.pop('del_desc', None)
+    
+    # የዕቃ መግዣ ጥያቄ ከሆነ
+    else:
+        payment_kb = [
+            [InlineKeyboardButton("💳 Telebirr", callback_data="pay_telebirr")],
+            [InlineKeyboardButton("🏦 CBE Birr", callback_data="pay_cbe")],
+            [InlineKeyboardButton("💵 Cash on Delivery", callback_data="pay_cash")]
+        ]
+        await update.message.reply_text(
+            "📍 **አድራሻዎ በትክክል ተቀብለናል!**\n\nእባክዎን የመጨረሻውን የክፍያ አማራጭ ይምረጡ፡",
+            reply_markup=InlineKeyboardMarkup(payment_kb),
+            parse_mode="Markdown"
+        )
+        if ADMIN_CHAT_ID:
+            try:
+                await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📍 **አዲስ የሎኬሽን አድራሻ ከ:** {user.full_name} (@{user.username})")
+                await context.bot.send_location(chat_id=ADMIN_CHAT_ID, latitude=location.latitude, longitude=location.longitude)
+            except Exception as e:
+                print(f"Location Forward Error: {e}")
 
-    payment_kb = [
-        [InlineKeyboardButton("💳 Telebirr", callback_data="pay_telebirr")],
-        [InlineKeyboardButton("🏦 CBE Birr", callback_data="pay_cbe")],
-        [InlineKeyboardButton("💵 Cash on Delivery", callback_data="pay_cash")]
-    ]
-
-    await update.message.reply_text(
-        "📍 **አድራሻዎ በትክክል ተቀብለናል!**\n\nእባክዎን የመጨረሻውን የክፍያ አማራጭ ይምረጡ፡",
-        reply_markup=InlineKeyboardMarkup(payment_kb),
-        parse_mode="Markdown"
-    )
-
-    if ADMIN_CHAT_ID:
-        try:
-            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"📍 **አዲስ የሎኬሽን አድራሻ ከ:** {user.full_name} (@{user.username})")
-            await context.bot.send_location(chat_id=ADMIN_CHAT_ID, latitude=location.latitude, longitude=location.longitude)
-        except Exception as e:
-            print(f"Location Forward Error: {e}")
-
-# F. Main Message Handler
+# G. Main Message Text Handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
@@ -306,13 +379,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🏠 ዋና ገጽ", callback_data="nav_home")]
         ]
         await update.message.reply_text("የሚፈልጉትን የዕቃ ምድብ ይምረጡ፡", reply_markup=InlineKeyboardMarkup(inline_kb))
-
-    elif text == "🚚 የጭነት / Delivery አገልግሎት":
-        loc_keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton("📍 የጭነት መነሻ ቦታ ይላኩ", request_location=True)]],
-            resize_keyboard=True, one_time_keyboard=True
-        )
-        await update.message.reply_text("⚠️ **ማሳሰቢያ:** እባክዎን የስልክዎን GPS ያብሩ!\n\nየጭነት መነሻ አድራሻዎን ለመላክ ከታች ያለውን ቁልፍ ይጫኑ፡", reply_markup=loc_keyboard, parse_mode="Markdown")
 
     elif text == "⚙️ Admin Panel" and ADMIN_CHAT_ID and str(user_id) == str(ADMIN_CHAT_ID):
         admin_kb = [[InlineKeyboardButton("➕ አዲስ እቃ መመዝገብ", callback_data="admin_add_start")]]
@@ -333,7 +399,7 @@ if __name__ == '__main__':
     keep_alive()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Seller Conversation Handler
+    # Conversation Handlers
     sell_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex('^🏪 እቃ ለመሸጥ / መመዝገብ$'), sell_start)],
         states={
@@ -345,7 +411,6 @@ if __name__ == '__main__':
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
-    # Admin Product Add Conversation Handler
     admin_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_start_add, pattern='^admin_add_start$')],
         states={
@@ -357,8 +422,18 @@ if __name__ == '__main__':
         fallbacks=[CommandHandler('cancel', cancel)]
     )
 
+    delivery_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex('^🚚 የጭነት / Delivery አገልግሎት$'), delivery_start)],
+        states={
+            DELIVERY_TYPE: [CallbackQueryHandler(delivery_type_selected, pattern='^deltype_')],
+            DELIVERY_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, delivery_desc_received)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel)]
+    )
+
     app.add_handler(sell_conv)
     app.add_handler(admin_conv)
+    app.add_handler(delivery_conv)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
